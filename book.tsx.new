@@ -1,0 +1,251 @@
+import { useState, FormEvent } from "react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useLocation, useSearch } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import { useToast } from "@/hooks/use-toast";
+import CategorySelector from "@/components/category-selector";
+import DatePicker from "@/components/date-picker";
+import TimePicker from "@/components/time-picker";
+import ProviderCard from "@/components/provider-card";
+import Footer from "@/components/footer";
+import { ServiceProvider } from "@shared/schema";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { useAuth } from "@/hooks/use-auth";
+
+export default function Book() {
+  const { isAuthenticated, user } = useAuth();
+  const [, navigate] = useLocation();
+  const { toast } = useToast();
+  const search = useSearch();
+  const searchParams = new URLSearchParams(search);
+  
+  const initialCategoryId = searchParams.get("category") 
+    ? parseInt(searchParams.get("category")!) 
+    : undefined;
+    
+  const initialProviderId = searchParams.get("provider")
+    ? parseInt(searchParams.get("provider")!)
+    : undefined;
+
+  const [selectedCategoryId, setSelectedCategoryId] = useState<number | undefined>(initialCategoryId);
+  const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  const [selectedTime, setSelectedTime] = useState<string>("");
+  const [description, setDescription] = useState<string>("");
+  const [selectedProviderId, setSelectedProviderId] = useState<number | undefined>(initialProviderId);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // Query providers by category
+  const { data: providers, isLoading: providersLoading } = useQuery<ServiceProvider[]>({
+    queryKey: ["/api/providers", selectedCategoryId ? `categoryId=${selectedCategoryId}` : ""],
+    enabled: !!selectedCategoryId,
+  });
+
+  // Get a specific provider when providerId is provided in query
+  const { data: specificProvider, isLoading: specificProviderLoading } = useQuery<ServiceProvider>({
+    queryKey: [`/api/providers/${initialProviderId}`],
+    enabled: !!initialProviderId,
+  });
+
+  // Book appointment mutation
+  const bookAppointmentMutation = useMutation({
+    mutationFn: async (appointmentData: any) => {
+      const res = await apiRequest("POST", "/api/appointments", appointmentData);
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Appointment booked!",
+        description: "Your appointment has been successfully scheduled.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      setIsSubmitting(false);
+      navigate("/appointments");
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Booking failed",
+        description: error.message || "There was a problem booking your appointment.",
+        variant: "destructive",
+      });
+      setIsSubmitting(false);
+    },
+  });
+
+  const handleCategorySelect = (categoryId: number) => {
+    setSelectedCategoryId(categoryId);
+    
+    // If category changes, clear provider selection
+    if (selectedCategoryId !== categoryId) {
+      setSelectedProviderId(undefined);
+    }
+  };
+
+  const handleProviderSelect = (providerId: number) => {
+    setSelectedProviderId(providerId);
+  };
+
+  const canSubmit = 
+    selectedCategoryId && 
+    selectedProviderId && 
+    selectedTime && 
+    description.trim().length > 0;
+
+  const handleSubmit = (e: FormEvent) => {
+    e.preventDefault();
+    
+    if (!isAuthenticated) {
+      toast({
+        title: "Login required",
+        description: "Please login to book an appointment",
+        variant: "destructive",
+      });
+      navigate("/login");
+      return;
+    }
+    
+    if (!canSubmit) {
+      toast({
+        title: "Missing information",
+        description: "Please fill out all required fields",
+        variant: "destructive",
+      });
+      return;
+    }
+    
+    setIsSubmitting(true);
+    
+    const appointmentData = {
+      serviceProviderId: selectedProviderId,
+      categoryId: selectedCategoryId,
+      date: selectedDate,
+      timeSlot: selectedTime,
+      description: description.trim(),
+      status: "pending",
+    };
+    
+    bookAppointmentMutation.mutate(appointmentData);
+  };
+
+  // If we have a specific provider from the URL parameter, use its category
+  if (specificProvider && !selectedCategoryId) {
+    setSelectedCategoryId(specificProvider.categoryId);
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col">
+      <main className="flex-grow container mx-auto px-4 py-6">
+        <h1 className="text-2xl md:text-3xl font-bold mb-6">Book an Appointment</h1>
+        
+        <form onSubmit={handleSubmit}>
+          <div className="bg-white rounded-xl shadow-sm p-6 mb-6">
+            {/* Service Categories */}
+            <div className="mb-6">
+              <h3 className="font-medium text-text-secondary mb-3">Select Service Category</h3>
+              <CategorySelector 
+                onCategorySelect={handleCategorySelect} 
+                selectedCategoryId={selectedCategoryId}
+              />
+            </div>
+            
+            {/* Service Providers */}
+            {selectedCategoryId && (
+              <div className="mb-6">
+                <h3 className="font-medium text-text-secondary mb-3">Select Service Provider</h3>
+                
+                {providersLoading || specificProviderLoading ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {Array(3).fill(0).map((_, i) => (
+                      <div key={i} className="bg-white rounded-xl shadow-sm overflow-hidden border p-4">
+                        <Skeleton className="h-40 w-full mb-3" />
+                        <Skeleton className="h-6 w-3/4 mb-2" />
+                        <Skeleton className="h-4 w-full mb-4" />
+                        <Skeleton className="h-8 w-full rounded-lg" />
+                      </div>
+                    ))}
+                  </div>
+                ) : providers && providers.length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {providers.map((provider) => (
+                      <div 
+                        key={provider.id} 
+                        className={`border-2 rounded-xl overflow-hidden cursor-pointer ${
+                          selectedProviderId === provider.id ? 'border-primary' : 'border-transparent'
+                        }`}
+                        onClick={() => handleProviderSelect(provider.id)}
+                      >
+                        <ProviderCard provider={provider} />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-center p-6 bg-gray-50 rounded-lg">
+                    <p>No service providers available for this category.</p>
+                  </div>
+                )}
+              </div>
+            )}
+            
+            {/* Date Selection */}
+            {selectedProviderId && (
+              <div className="mb-6">
+                <h3 className="font-medium text-text-secondary mb-3">Select Date</h3>
+                <DatePicker 
+                  onDateSelect={setSelectedDate} 
+                  selectedDate={selectedDate}
+                />
+              </div>
+            )}
+            
+            {/* Time Selection */}
+            {selectedProviderId && (
+              <div className="mb-6">
+                <h3 className="font-medium text-text-secondary mb-3">Select Time</h3>
+                <TimePicker 
+                  onTimeSelect={setSelectedTime}
+                  selectedTime={selectedTime}
+                />
+              </div>
+            )}
+            
+            {/* Issue Description */}
+            {selectedProviderId && (
+              <div className="mb-6">
+                <h3 className="font-medium text-text-secondary mb-3">Describe Your Issue</h3>
+                <Textarea 
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={3} 
+                  placeholder="Please provide details about your maintenance issue..."
+                  className="resize-none"
+                />
+                <div className="flex items-center mt-2 text-sm text-text-secondary">
+                  <i className="ri-information-line mr-1"></i>
+                  <span>Be specific to help the maintenance team prepare accordingly</span>
+                </div>
+              </div>
+            )}
+            
+            <div className="flex justify-end">
+              <Button 
+                type="submit" 
+                className="bg-primary hover:bg-primary/90 text-white px-6 py-3" 
+                disabled={!canSubmit || isSubmitting}
+              >
+                {isSubmitting ? (
+                  <>
+                    <i className="ri-loader-4-line animate-spin mr-2"></i> Booking...
+                  </>
+                ) : (
+                  "Book Appointment"
+                )}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </main>
+      <Footer />
+    </div>
+  );
+}
